@@ -13,16 +13,17 @@ services:
     hostname: kafka
     ports:
       - "9092:9092"
-      - "29092:29092"
     environment:
-      - KAFKA_BROKER_ID=1
-      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092,PLAINTEXT_HOST://kafka:29092
-      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT_HOST
-    volumes:
-      - ./create-kafka-topics.sh:/create-kafka-topics.sh
-    command: ["sh", "-c", "sleep 30 && /create-kafka-topics.sh && tail -f /dev/null"]
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     depends_on:
       - zookeeper
-git reset 
+    volumes:
+      - ./create-kafka-topics.sh:/create-kafka-topics.sh
+
+networks:
+  default:
+    driver: bridge
