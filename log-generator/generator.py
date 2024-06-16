@@ -2,12 +2,27 @@ import threading
 import time
 import random
 import uuid
+import json
 from datetime import datetime
 from faker import Faker
+from kafka import KafkaProducer
+from queue import Queue
 
 fake = Faker()
 
 # Configuration
+KAFKA_BROKER = 'localhost:9092'
+TOPICS = {
+    'FE': {
+        'network': 'logs.fe.network',
+        'application': 'logs.fe.application'
+    },
+    'BE': {
+        'network': 'logs.be.network',
+        'application': 'logs.be.application'
+    }
+}
+
 FE_ENDPOINT_METHODS = {
     "/resource": ["GET"],
     "/resource/1": ["GET", "PUT"],
@@ -53,8 +68,11 @@ PREDEFINED_ERRORS = [
 class LogGenerator:
     def __init__(self):
         self.error_occurred = False
-        self.lock = threading.Lock()
-        self.shared_correlation_id = None
+        self.correlation_queue = Queue()
+        self.producer = KafkaProducer(
+            bootstrap_servers=KAFKA_BROKER,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
 
     def generate_correlation_id(self):
         return str(uuid.uuid4())
@@ -109,24 +127,40 @@ class LogGenerator:
         else:
             return 5
 
-    def generate_logs(self, app, endpoint_methods):
+    def generate_fe_logs(self):
         while True:
-            with self.lock:
-                correlation_id = self.generate_correlation_id()
-                self.shared_correlation_id = correlation_id if app == 'FE' else self.shared_correlation_id
+            correlation_id = self.generate_correlation_id()
+            self.correlation_queue.put(correlation_id)
 
             traffic_rate = self.traffic_pattern()
             sleep_time = 1.0 / traffic_rate
 
             status_code = self.determine_status_code()
             level = STATUS_CODES[status_code]
-            endpoint, method = self.select_endpoint_and_method(endpoint_methods)
+            endpoint, method = self.select_endpoint_and_method(FE_ENDPOINT_METHODS)
 
-            self.log_message(app, correlation_id, endpoint, method, status_code, level)
+            self.log_message('FE', correlation_id, endpoint, method, status_code, level)
             time.sleep(sleep_time)
 
             if self.should_generate_error(traffic_rate):
-                self.generate_and_log_error(app, correlation_id)
+                self.generate_and_log_error('FE', correlation_id)
+
+    def generate_be_logs(self):
+        while True:
+            correlation_id = self.correlation_queue.get()
+
+            traffic_rate = self.traffic_pattern()
+            sleep_time = 1.0 / traffic_rate
+
+            status_code = self.determine_status_code()
+            level = STATUS_CODES[status_code]
+            endpoint, method = self.select_endpoint_and_method(BE_ENDPOINT_METHODS)
+
+            self.log_message('BE', correlation_id, endpoint, method, status_code, level)
+            time.sleep(sleep_time)
+
+            if self.should_generate_error(traffic_rate):
+                self.generate_and_log_error('BE', correlation_id)
 
     def determine_status_code(self):
         if not self.error_occurred:
@@ -143,6 +177,8 @@ class LogGenerator:
     def log_message(self, app, correlation_id, endpoint, method, status_code, level):
         network_log = self.generate_network_log(app, correlation_id, endpoint, method, status_code)
         application_log = self.generate_application_log(app, correlation_id, level)
+        self.producer.send(TOPICS[app]['network'], network_log)
+        self.producer.send(TOPICS[app]['application'], application_log)
         print(network_log)
         print(application_log)
 
@@ -151,16 +187,18 @@ class LogGenerator:
 
     def generate_and_log_error(self, app, correlation_id):
         error_log = self.generate_error_log(app, correlation_id)
+        self.producer.send(TOPICS[app]['application'], error_log)
         print(error_log)
         if app == 'FE':
             be_error_log = self.generate_error_log('BE', correlation_id)
+            self.producer.send(TOPICS['BE']['application'], be_error_log)
             print(be_error_log)
         self.error_occurred = True
 
     def start_generating_logs(self):
         threads = [
-            threading.Thread(target=self.generate_logs, args=('FE', FE_ENDPOINT_METHODS)),
-            threading.Thread(target=self.generate_logs, args=('BE', BE_ENDPOINT_METHODS))
+            threading.Thread(target=self.generate_fe_logs),
+            threading.Thread(target=self.generate_be_logs)
         ]
 
         for thread in threads:
